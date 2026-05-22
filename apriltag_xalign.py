@@ -2,6 +2,7 @@
 
 import cv2
 import depthai as dai
+import serial
 import time
 
 with dai.Pipeline() as pipeline:
@@ -65,6 +66,21 @@ with dai.Pipeline() as pipeline:
             print("bad")
         
         err_px = frame.shape[1] / 2 - tagsCX[0]
+        
+        # send data with rs485 from jetson nano to vex brain
+
+        ser = serial.Serial(
+            port='/dev/ttyUSB0',
+            baudrate=9600,
+            bytesize=8,
+            parity='N',
+            stopbits=1,
+            timeout=1
+        )
+        
+        data_packet = bytearray([0x01, 0x03, 0x00, 0x00, 0x00, 0x02, 0xC4, 0x0B])
+        ser.write(data_packet)
+
         
         if cv2.waitKey(1) == ord("q"):
             break

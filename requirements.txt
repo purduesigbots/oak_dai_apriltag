@@ -1,2 +1,4 @@
 depthai
 opencv-python
+serial
+time
