@@ -14,9 +14,9 @@ from threading import Thread
 PORT = "/dev/ttyTHS1"
 
 BAUDRATE = 9600
-BYTESIZE = serial.EIGHTBITS
-PARITY = serial.PARITY_NONE
-STOPBITS = serial.STOPBITS_ONE
+BYTESIZE = 8
+PARITY = 'N'
+STOPBITS = 1
 TIMEOUT = 1
 
 # =========================
