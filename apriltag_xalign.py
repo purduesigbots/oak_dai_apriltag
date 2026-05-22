@@ -214,10 +214,10 @@ with dai.Pipeline() as pipeline:
 
         # cv2.imshow("detections", frame)
         
-        if len(tagsCX) > 1 or len(tagsCX) == 0:
+        if len(tagsCX) != 1:
             print("bad")
         
-        err_px = frame.shape[1] / 2 - tagsCX[0]
+        err_px = tagsCX[0] - (frame.shape[1] / 2.0)
         
         # send data with rs485 from jetson nano to vex brain
         # =========================
