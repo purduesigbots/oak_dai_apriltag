@@ -3,7 +3,159 @@
 import cv2
 import depthai as dai
 import serial
+import struct
 import time
+from threading import Thread
+
+# =========================
+# RS485 CONFIGURATION
+# =========================
+
+PORT = "/dev/ttyTHS1"
+
+BAUDRATE = 9600
+BYTESIZE = serial.EIGHTBITS
+PARITY = serial.PARITY_NONE
+STOPBITS = serial.STOPBITS_ONE
+TIMEOUT = 1
+
+# =========================
+# SERIAL SETUP
+# =========================
+
+ser = serial.Serial(
+    port=PORT,
+    baudrate=BAUDRATE,
+    bytesize=BYTESIZE,
+    parity=PARITY,
+    stopbits=STOPBITS,
+    timeout=TIMEOUT
+)
+
+print(f"Connected to {PORT}")
+
+# =========================
+# PACKET FORMAT
+# =========================
+#
+# Packet Structure:
+#
+# [START][LENGTH][DATA][CHECKSUM]
+#
+# START     = 0xAA
+# LENGTH    = Number of bytes in DATA
+# DATA      = Payload bytes
+# CHECKSUM  = Sum(DATA) % 256
+#
+# Example:
+# AA 05 48 45 4C 4C 4F 74
+#
+# =========================
+
+
+START_BYTE = 0xAA
+
+
+def calculate_checksum(data_bytes):
+    return sum(data_bytes) % 256
+
+
+def encode_packet(data: bytes) -> bytes:
+    length = len(data)
+    checksum = calculate_checksum(data)
+
+    packet = struct.pack("BB", START_BYTE, length)
+    packet += data
+    packet += struct.pack("B", checksum)
+
+    return packet
+
+
+def decode_packet(packet: bytes):
+    if len(packet) < 3:
+        return None
+
+    start = packet[0]
+
+    if start != START_BYTE:
+        return None
+
+    length = packet[1]
+
+    data = packet[2:2 + length]
+
+    received_checksum = packet[2 + length]
+
+    calculated_checksum = calculate_checksum(data)
+
+    if received_checksum != calculated_checksum:
+        print("Checksum failed")
+        return None
+
+    return data
+
+# =========================
+# SEND FUNCTION
+# =========================
+
+def send_message(message: str):
+    data = message.encode("utf-8")
+    packet = encode_packet(data)
+
+    ser.write(packet)
+
+    print(f"Sent: {packet.hex(' ')}")
+
+# =========================
+# RECEIVE FUNCTION
+# =========================
+
+def receive_loop():
+    while True:
+        try:
+            start = ser.read(1)
+
+            if not start:
+                continue
+
+            if start[0] != START_BYTE:
+                continue
+
+            length_bytes = ser.read(1)
+
+            if not length_bytes:
+                continue
+
+            length = length_bytes[0]
+
+            data = ser.read(length)
+
+            checksum = ser.read(1)
+
+            if len(data) != length or len(checksum) != 1:
+                continue
+
+            full_packet = (
+                start +
+                length_bytes +
+                data +
+                checksum
+            )
+
+            decoded = decode_packet(full_packet)
+
+            if decoded:
+                print("Received:", decoded.decode("utf-8"))
+
+        except Exception as e:
+            print("Receive error:", e)
+
+# =========================
+# START RECEIVER THREAD
+# =========================
+
+receiver = Thread(target=receive_loop, daemon=True)
+receiver.start()
 
 with dai.Pipeline() as pipeline:
     hostCamera = pipeline.create(dai.node.Camera).build()
@@ -17,7 +169,7 @@ with dai.Pipeline() as pipeline:
     startTime = time.monotonic()
     counter = 0
     fps = 0.0
-
+    
     pipeline.start()
     while pipeline.isRunning():
         aprilTagMessage = outQueue.get()
@@ -68,19 +220,18 @@ with dai.Pipeline() as pipeline:
         err_px = frame.shape[1] / 2 - tagsCX[0]
         
         # send data with rs485 from jetson nano to vex brain
+        # =========================
+        # MAIN LOOP
+        # =========================
 
-        ser = serial.Serial(
-            port='/dev/ttyUSB0',
-            baudrate=9600,
-            bytesize=8,
-            parity='N',
-            stopbits=1,
-            timeout=1
-        )
-        
-        data_packet = bytearray([0x01, 0x03, 0x00, 0x00, 0x00, 0x02, 0xC4, 0x0B])
-        ser.write(data_packet)
+        msg = input("Enter message: ")
 
+        if msg.lower() == "exit":
+            break
+
+        send_message(msg)
         
         if cv2.waitKey(1) == ord("q"):
             break
+        
+    ser.close()
