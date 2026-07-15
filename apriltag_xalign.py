@@ -16,7 +16,7 @@ from typing import Optional
 APRILTAG_VISUAL_DEBUG = True  # set false to skip frame pulls / overlays
 RX_DAEMON = False  # set false to skip the receive thread from brain
 
-BAUDRATE = 115200
+BAUDRATE = 9600
 BYTESIZE = 8
 PARITY = "N"
 STOPBITS = 1
@@ -188,8 +188,9 @@ with dai.Pipeline() as pipeline:
                 counter = 0
                 startTime = currentTime
 
-            passthroughImage: dai.ImgFrame = passthroughOutputQueue.get()
-            frame = passthroughImage.getCvFrame()
+            if passthroughOutputQueue is not None:
+                passthroughImage = passthroughOutputQueue.get()
+                frame = passthroughImage.getCvFrame()  # type: ignore[attr-defined]
 
         def to_int(pt):
             # depthai corners come back as floats
@@ -211,7 +212,7 @@ with dai.Pipeline() as pipeline:
             if best is None or abs_err < best[0]:
                 best = (abs_err, offset, (topLeft, topRight, bottomRight, bottomLeft))
 
-            if APRILTAG_VISUAL_DEBUG:
+            if APRILTAG_VISUAL_DEBUG and frame is not None:
                 cv2.line(frame, topLeft, topRight, color, 2, cv2.LINE_AA, 0)
                 cv2.line(frame, topRight, bottomRight, color, 2, cv2.LINE_AA, 0)
                 cv2.line(frame, bottomRight, bottomLeft, color, 2, cv2.LINE_AA, 0)
