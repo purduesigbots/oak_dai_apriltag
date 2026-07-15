@@ -8,12 +8,13 @@ import serial.tools.list_ports
 import struct
 import time
 from threading import Thread
+from typing import Optional
 
 # usb link to the v5 user port (usually ttyacm1)
 # override with: V5_PORT=/dev/ttyACM1 python3 apriltag_xalign.py
 
 APRILTAG_VISUAL_DEBUG = True  # set false to skip frame pulls / overlays
-RX_DAEMON = False # set False to skip the receive thread from brain
+RX_DAEMON = False  # set false to skip the receive thread from brain
 
 BAUDRATE = 115200
 BYTESIZE = 8
@@ -21,7 +22,14 @@ PARITY = "N"
 STOPBITS = 1
 TIMEOUT = 1
 
+FRAME_W = 1920
+FRAME_H = 1080
+
 START_BYTE = 0xAA  # packet: aa | len | data... | checksum
+
+# payload: 00 = no tag | 01 + int16le offset_px (tag right of center = +)
+STATUS_NO_TAG = 0x00
+STATUS_OK = 0x01
 
 
 def find_v5_user_port() -> str:
@@ -40,8 +48,7 @@ def find_v5_user_port() -> str:
         raise RuntimeError(
             "No V5 USB serial ports found. Connect Jetson USBA to Brain microUSB, then retry."
         )
-    # second acm device is usually the user port on linux, shouldn't be falling
-    # back on ttyACM0 unless something is terribly wrong
+    # second acm device is usually the user port on linux
     if len(ports) >= 2:
         return ports[1]
     return ports[0]
@@ -58,6 +65,7 @@ ser = serial.Serial(
     timeout=TIMEOUT,
 )
 print(f"Connected to V5 user port {PORT} @ {BAUDRATE}")
+
 
 def calculate_checksum(data_bytes):
     # cheap integrity check: sum of payload bytes mod 256
@@ -98,13 +106,17 @@ def decode_packet(packet: bytes):
     return data
 
 
-def send_message(message: str):
-    # packetize text and push it to the brain over usb
-    data = message.encode("utf-8")
+def send_align(offset_px: Optional[int]):
+    # none => no-tag packet; else send signed x offset from image center
+    if offset_px is None:
+        data = struct.pack("B", STATUS_NO_TAG)
+    else:
+        data = struct.pack("<Bh", STATUS_OK, int(offset_px))
+
     packet = encode_packet(data)
     ser.write(packet)
-    ser.flush()  # make sure it actually hits the wire
-    print(f"Sent: {packet.hex(' ')}")
+    ser.flush()
+    print(f"Sent: {packet.hex(' ')}  offset={offset_px}")
 
 
 def receive_loop():
@@ -131,10 +143,11 @@ def receive_loop():
             full_packet = start + length_bytes + data + checksum
             decoded = decode_packet(full_packet)
             if decoded:
-                print("Received from brain:", decoded.decode("utf-8"))
+                print("Received from brain:", decoded.decode("utf-8", errors="replace"))
 
         except Exception as e:
             print("Receive from brain error:", e)
+
 
 if RX_DAEMON:
     receiver = Thread(target=receive_loop, daemon=True)
@@ -144,7 +157,7 @@ with dai.Pipeline() as pipeline:
     hostCamera = pipeline.create(dai.node.Camera).build()
     aprilTagNode = pipeline.create(dai.node.AprilTag)
     aprilTagNode.initialConfig.setFamily(dai.AprilTagConfig.Family.TAG_CIR21H7)
-    hostCamera.requestOutput((1920, 1080)).link(aprilTagNode.inputImage)
+    hostCamera.requestOutput((FRAME_W, FRAME_H)).link(aprilTagNode.inputImage)
     outQueue = aprilTagNode.out.createOutputQueue()
 
     # only request the camera passthrough stream if we're drawing boxes
@@ -153,9 +166,11 @@ with dai.Pipeline() as pipeline:
         passthroughOutputQueue = aprilTagNode.passthroughInputImage.createOutputQueue()
 
     color = (0, 255, 0)
+    best_color = (0, 0, 255)
     startTime = time.monotonic()
     counter = 0
     fps = 0.0
+    img_cx = FRAME_W / 2.0
 
     pipeline.start()
     while pipeline.isRunning():
@@ -180,7 +195,7 @@ with dai.Pipeline() as pipeline:
             # depthai corners come back as floats
             return (int(pt.x), int(pt.y))
 
-        tagsCX = []
+        best = None  # (abs_err, offset, corners)
 
         for tag in aprilTags:
             topLeft = to_int(tag.topLeft)
@@ -188,33 +203,51 @@ with dai.Pipeline() as pipeline:
             bottomRight = to_int(tag.bottomRight)
             bottomLeft = to_int(tag.bottomLeft)
 
-            # use box center x for later alignment math
-            centerX = int((topLeft[0] + bottomRight[0]) / 2)
-            tagsCX.append(centerX)
+            # box center x, then how far that sits from image center
+            tag_cx = (topLeft[0] + bottomRight[0]) / 2.0
+            offset = int(round(tag_cx - img_cx))
+            abs_err = abs(offset)
+
+            if best is None or abs_err < best[0]:
+                best = (abs_err, offset, (topLeft, topRight, bottomRight, bottomLeft))
 
             if APRILTAG_VISUAL_DEBUG:
                 cv2.line(frame, topLeft, topRight, color, 2, cv2.LINE_AA, 0)
                 cv2.line(frame, topRight, bottomRight, color, 2, cv2.LINE_AA, 0)
                 cv2.line(frame, bottomRight, bottomLeft, color, 2, cv2.LINE_AA, 0)
                 cv2.line(frame, bottomLeft, topLeft, color, 2, cv2.LINE_AA, 0)
-                cv2.putText(
+
+        if APRILTAG_VISUAL_DEBUG and frame is not None:
+            # highlight the closest-to-center tag in red
+            if best is not None:
+                tl, tr, br, bl = best[2]
+                cv2.line(frame, tl, tr, best_color, 3, cv2.LINE_AA, 0)
+                cv2.line(frame, tr, br, best_color, 3, cv2.LINE_AA, 0)
+                cv2.line(frame, br, bl, best_color, 3, cv2.LINE_AA, 0)
+                cv2.line(frame, bl, tl, best_color, 3, cv2.LINE_AA, 0)
+                cv2.line(
                     frame,
-                    f"fps: {fps:.1f}",
-                    (200, 20),
-                    cv2.FONT_HERSHEY_TRIPLEX,
-                    0.5,
-                    color,
+                    (int(img_cx), 0),
+                    (int(img_cx), FRAME_H),
+                    (255, 255, 0),
+                    1,
+                    cv2.LINE_AA,
                 )
 
-        if len(tagsCX) < 1:
-            print(f"Expected at least 1 tag, but found {len(tagsCX)}")
+            cv2.putText(
+                frame,
+                f"fps: {fps:.1f}",
+                (200, 20),
+                cv2.FONT_HERSHEY_TRIPLEX,
+                0.5,
+                color,
+            )
 
-        # manual tx test over usb while vision loop runs
-        msg = input("Enter message: ")
-        if msg.lower() == "exit":
-            break
-
-        send_message(msg)
+        # push align packet every frame (none => no tag seen)
+        if best is None:
+            send_align(None)
+        else:
+            send_align(best[1])
 
         if APRILTAG_VISUAL_DEBUG and cv2.waitKey(1) == ord("q"):
             break
