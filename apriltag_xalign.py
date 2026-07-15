@@ -1,27 +1,52 @@
 #!/usr/bin/env python3
 
+import os
 import cv2
 import depthai as dai
 import serial
+import serial.tools.list_ports
 import struct
 import time
 from threading import Thread
 
 # =========================
-# RS485 CONFIGURATION
+# USB SERIAL (V5 user port)
 # =========================
+# Plug Jetson USB ↔ brain micro-USB.
+# Brain shows two CDC devices on Linux:
+#   /dev/ttyACM0  = system (uploads / PROS protocol)  ← do NOT use for app data
+#   /dev/ttyACM1  = user   (program stdin/stdout)     ← use this one
+# Override with:  V5_PORT=/dev/ttyACM1 python3 apriltag_xalign.py
 
-PORT = "/dev/ttyTHS0"
-
-BAUDRATE = 5000
+BAUDRATE = 115200
 BYTESIZE = 8
-PARITY = 'N'
+PARITY = "N"
 STOPBITS = 1
 TIMEOUT = 1
 
-# =========================
-# SERIAL SETUP
-# =========================
+
+def find_v5_user_port() -> str:
+    override = os.environ.get("V5_PORT")
+    if override:
+        return override
+
+    ports = [
+        p.device
+        for p in serial.tools.list_ports.comports()
+        if ("ACM" in p.device) or ("usbmodem" in p.device.lower())
+    ]
+    ports = sorted(ports)
+    if not ports:
+        raise RuntimeError(
+            "No V5 USB serial ports found. Connect micro-USB Jetson↔brain, then retry."
+        )
+    if len(ports) >= 2:
+        # Second ACM device is usually the user port on Linux
+        return ports[1]
+    return ports[0]
+
+
+PORT = find_v5_user_port()
 
 ser = serial.Serial(
     port=PORT,
@@ -29,11 +54,9 @@ ser = serial.Serial(
     bytesize=BYTESIZE,
     parity=PARITY,
     stopbits=STOPBITS,
-    timeout=TIMEOUT
+    timeout=TIMEOUT,
 )
-
-print(f"Connected to {PORT}")
-
+print(f"Connected to V5 user port {PORT} @ {BAUDRATE}")
 # =========================
 # PACKET FORMAT
 # =========================
@@ -103,6 +126,7 @@ def send_message(message: str):
     packet = encode_packet(data)
 
     ser.write(packet)
+    ser.flush()
 
     print(f"Sent: {packet.hex(' ')}")
 
@@ -219,7 +243,7 @@ with dai.Pipeline() as pipeline:
         
         # err_px = tagsCX[0] - (frame.shape[0] / 2.0)
         
-        # send data with rs485 from jetson nano to vex brain
+        # send data over USB user serial to V5 stdin
         # =========================
         # MAIN LOOP
         # =========================
