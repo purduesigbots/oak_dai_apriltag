@@ -13,6 +13,7 @@ from threading import Thread
 # override with: V5_PORT=/dev/ttyACM1 python3 apriltag_xalign.py
 
 APRILTAG_VISUAL_DEBUG = True  # set false to skip frame pulls / overlays
+RX_DAEMON = False # set False to skip the receive thread from brain
 
 BAUDRATE = 115200
 BYTESIZE = 8
@@ -135,9 +136,9 @@ def receive_loop():
         except Exception as e:
             print("Receive from brain error:", e)
 
-
-receiver = Thread(target=receive_loop, daemon=True)
-receiver.start()
+if RX_DAEMON:
+    receiver = Thread(target=receive_loop, daemon=True)
+    receiver.start()
 
 with dai.Pipeline() as pipeline:
     hostCamera = pipeline.create(dai.node.Camera).build()
