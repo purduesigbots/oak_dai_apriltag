@@ -11,9 +11,9 @@ from threading import Thread
 # RS485 CONFIGURATION
 # =========================
 
-PORT = "/dev/ttyTHS1"
+PORT = "/dev/ttyTHS0"
 
-BAUDRATE = 9600
+BAUDRATE = 5000
 BYTESIZE = 8
 PARITY = 'N'
 STOPBITS = 1
@@ -95,7 +95,7 @@ def decode_packet(packet: bytes):
     return data
 
 # =========================
-# SEND FUNCTION
+# SEND FUNCTION - tagsCX[0]
 # =========================
 
 def send_message(message: str):
@@ -217,7 +217,7 @@ with dai.Pipeline() as pipeline:
         if len(tagsCX) != 1:
             print("bad")
         
-        err_px = tagsCX[0] - (frame.shape[1] / 2.0)
+        # err_px = tagsCX[0] - (frame.shape[0] / 2.0)
         
         # send data with rs485 from jetson nano to vex brain
         # =========================
