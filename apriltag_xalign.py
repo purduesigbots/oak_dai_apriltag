@@ -13,7 +13,7 @@ from typing import Optional
 # usb link to the v5 user port (usually ttyacm1)
 # override with: V5_PORT=/dev/ttyACM1 python3 apriltag_xalign.py
 
-APRILTAG_VISUAL_DEBUG = True  # set false to skip frame pulls / overlays
+APRILTAG_VISUAL_DEBUG = False # set false to skip frame pulls / overlays
 RX_DAEMON = False  # set false to skip the receive thread from brain
 
 BAUDRATE = 9600
@@ -27,7 +27,7 @@ FRAME_H = 1080
 
 START_BYTE = 0xAA  # packet: aa | len | data... | checksum
 
-# payload: 00 = no tag | 01 + int16le offset_px (tag right of center = +)
+# payload: 00 = no tag | 01 + int16le offset_px (tag right of center = +) + int16le tag_size_px
 STATUS_NO_TAG = 0x00
 STATUS_OK = 0x01
 
@@ -106,17 +106,17 @@ def decode_packet(packet: bytes):
     return data
 
 
-def send_align(offset_px: Optional[int]):
-    # none => no-tag packet; else send signed x offset from image center
+def send_align(offset_px: Optional[int], tag_size_px: Optional[int]):
+    # none => no-tag packet; else send signed x offset from image center and a linear tag size in pixels
     if offset_px is None:
-        data = struct.pack("B", STATUS_NO_TAG)
+        data = struct.pack("<B", STATUS_NO_TAG)
     else:
-        data = struct.pack("<Bh", STATUS_OK, int(offset_px))
+        data = struct.pack("<Bhh", STATUS_OK, int(offset_px), int(tag_size_px or 0))
 
     packet = encode_packet(data)
     ser.write(packet)
     ser.flush()
-    print(f"Sent: {packet.hex(' ')}  offset={offset_px}")
+    print(f"Sent: {packet.hex(' ')}  offset={offset_px} size={tag_size_px}")
 
 
 def receive_loop():
@@ -196,7 +196,7 @@ with dai.Pipeline() as pipeline:
             # depthai corners come back as floats
             return (int(pt.x), int(pt.y))
 
-        best = None  # (abs_err, offset, corners)
+        best = None  # (abs_err, offset, tag_size_px, corners)
 
         for tag in aprilTags:
             topLeft = to_int(tag.topLeft)
@@ -208,9 +208,12 @@ with dai.Pipeline() as pipeline:
             tag_cx = (topLeft[0] + bottomRight[0]) / 2.0
             offset = int(round(tag_cx - img_cx))
             abs_err = abs(offset)
+            width_px = max(1, int(round(((topRight[0] - topLeft[0]) + (bottomRight[0] - bottomLeft[0])) / 2.0)))
+            height_px = max(1, int(round(((bottomLeft[1] - topLeft[1]) + (bottomRight[1] - topRight[1])) / 2.0)))
+            tag_size_px = int(round((width_px + height_px) / 2.0))
 
             if best is None or abs_err < best[0]:
-                best = (abs_err, offset, (topLeft, topRight, bottomRight, bottomLeft))
+                best = (abs_err, offset, tag_size_px, (topLeft, topRight, bottomRight, bottomLeft))
 
             if APRILTAG_VISUAL_DEBUG and frame is not None:
                 cv2.line(frame, topLeft, topRight, color, 2, cv2.LINE_AA, 0)
@@ -221,7 +224,7 @@ with dai.Pipeline() as pipeline:
         if APRILTAG_VISUAL_DEBUG and frame is not None:
             # highlight the closest-to-center tag in red
             if best is not None:
-                tl, tr, br, bl = best[2]
+                tl, tr, br, bl = best[3]
                 cv2.line(frame, tl, tr, best_color, 3, cv2.LINE_AA, 0)
                 cv2.line(frame, tr, br, best_color, 3, cv2.LINE_AA, 0)
                 cv2.line(frame, br, bl, best_color, 3, cv2.LINE_AA, 0)
@@ -246,9 +249,9 @@ with dai.Pipeline() as pipeline:
 
         # push align packet every frame (none => no tag seen)
         if best is None:
-            send_align(None)
+            send_align(None, None)
         else:
-            send_align(best[1])
+            send_align(best[1], best[2])
 
         if APRILTAG_VISUAL_DEBUG and cv2.waitKey(1) == ord("q"):
             break
